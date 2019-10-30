@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.15 FATAL_ERROR)
+project(compressor LANGUAGES CXX)
+SET(CUDA_SEPARABLE_COMPILATION ON)
+find_library(ADIOS2_LIBRARY NAMES adios2)
+find_package(MPI REQUIRED COMPONENTS CXX)
+find_package(Kokkos REQUIRED)
+find_path(ADIOS2_INCLUDE_DIR NAMES adios2.h)
+find_library(LIBGF_LIBRARY NAMES gf)
+find_path(LIBGF_INCLUDE_DIR NAMES gaussian_filter.h)
+
+add_executable(gaussian_filter_test gaussian_filter_test.cpp)
+target_link_libraries(gaussian_filter_test MPI::MPI_CXX ${ADIOS2_LIBRARY} Kokkos::kokkos ${LIBGF_LIBRARY} )
+target_include_directories(gaussian_filter_test PUBLIC ${ADIOS2_INCLUDE_DIR} ${LIBGF_INCLUDE_DIR} )
+set_property(TARGET gaussian_filter_test PROPERTY CXX_STANDARD 11)
+
+install(TARGETS gaussian_filter_test)
