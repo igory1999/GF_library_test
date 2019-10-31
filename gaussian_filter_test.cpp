@@ -6,14 +6,19 @@
 using namespace GaussianFilter;
 using namespace std;
 
-void init_data(ViewMatrixType::HostMirror d, int d_size)
+void init_data(vector<double>& d, int d_size)
 {
-  d(10, 20, 30) = 5.3;
-  d(0,0,0) = 10.5;
-  d(0,40,40) = - 11.3;
+  int index;
+  index = 30 + 20*d_size + 10*d_size*d_size;
+  d[index] = 5.3;
+  index = 0 + 0*d_size + 0*d_size*d_size;
+  d[index] = 10.5;
+  index = 40 + 40*d_size + 0*d_size*d_size;
+  d[index] = - 11.3;
 }
 
-void to_adios2(ViewMatrixType::HostMirror data, MPI_Comm *comm, std::string stream_name)
+void to_adios2(Kokkos::View<double***, Kokkos::HostSpace,
+               Kokkos::MemoryTraits<Kokkos::Unmanaged> > data, MPI_Comm *comm, std::string stream_name)
 {
   adios2::ADIOS ad ("adios2.xml", *comm, adios2::DebugON);
   adios2::IO writer_io = ad.DeclareIO(stream_name);
@@ -51,6 +56,7 @@ int main(int argc, char ** argv)
   MPI_Comm comm;
   MPI_Comm_split(MPI_COMM_WORLD, color, wrank, &comm);
 
+
   MPI_Comm_rank(comm, &rank);
   MPI_Comm_size(comm, &comm_size);
   
@@ -58,52 +64,78 @@ int main(int argc, char ** argv)
   int gw = 3;
   int l = 2*gw + 1;
   double sigma = 0.1;
-  
+  int tile0=8, tile1=8, tile2=8;
+
+
   Kokkos::initialize( argc, argv );
   {
-    ViewMatrixType g("gaussian", l, l, l);
-    ViewMatrixType data("data", L, L, L);
-    ViewMatrixType result("result", L, L, L);
-    ViewMatrixType::HostMirror h_result = Kokkos::create_mirror_view( result );
-    ViewMatrixType::HostMirror h_data = Kokkos::create_mirror_view( data );
-    
 
-    Kokkos::Timer timer;
-    double time;
-    
-    init_data(h_data, L);
+  Kokkos::Timer timer;
+  double time;
 
-    time = timer.seconds();
-    std::cout<<"init_data " << time << std::endl;
+  ViewMatrixType g("gaussian", l, l, l);
+  generate_gaussian(sigma,  g);
+  ViewMatrixConstType gg = g;
 
-    timer.reset();
-    Kokkos::deep_copy(data, h_data);
-    time = timer.seconds();
-    std::cout<<"h_data -> data " << time << std::endl;
-    
-    timer.reset();
-    generate_gaussian(sigma,  g);
-    time = timer.seconds();
-    std::cout<<"generate_gaussian  " << time << std::endl;
+  Kokkos::fence();
+  time = timer.seconds();
+  std::cout<<"generate_gaussian " << time << std::endl;
+  timer.reset();
 
-    ViewMatrixConstType gg = g;
-    
-    timer.reset();
-    apply_kernel(data, result, gg, int(8), int(8), int(8));
-    Kokkos::fence();
-    time = timer.seconds();
-    std::cout<<"apply_kernel  " << time << std::endl;
-    
+  vector<double> v_data(L*L*L, 0);
+  init_data(v_data, L);  
+  Kokkos::View<double***, Kokkos::HostSpace, 
+	       Kokkos::MemoryTraits<Kokkos::Unmanaged> > h_data(v_data.data(), L, L, L); 
 
-    timer.reset();
-    Kokkos::deep_copy(h_result, result);
-    time = timer.seconds();
-    std::cout<<"result -> h_result  " << time << std::endl;
+  Kokkos::fence();
+  time = timer.seconds();
+  std::cout<<"init_data " << time << std::endl;
+  timer.reset();
 
-    timer.reset();    
-    to_adios2(h_result, &comm, "data");
-    time = timer.seconds();
-    std::cout<<"adios2  " << time << std::endl;    
+
+  auto d_data = Kokkos::create_mirror_view_and_copy(Kokkos::Cuda(), h_data);
+
+  Kokkos::fence();
+  time = timer.seconds();
+  std::cout<<"h_data -> d_data " << time << std::endl;
+  timer.reset();
+
+  Kokkos::View<double***, Kokkos::LayoutLeft, Kokkos::Cuda> data("data", L, L, L);
+  Kokkos::deep_copy(data, d_data);
+
+  Kokkos::fence();
+  time = timer.seconds();
+  std::cout<<"d_data -> data " << time << std::endl;
+  timer.reset();
+
+  Kokkos::View<double***, Kokkos::LayoutLeft, Kokkos::Cuda> result("result", L, L, L);
+  apply_kernel(data, result, gg, tile0, tile1, tile2);
+
+  Kokkos::fence();
+  time = timer.seconds();
+  std::cout<<"apply_kernel " << time << std::endl;
+  timer.reset();
+
+  Kokkos::deep_copy(d_data, result);
+
+  Kokkos::fence();
+  time = timer.seconds();
+  std::cout<<"result -> d_data " << time << std::endl;
+  timer.reset();
+
+  Kokkos::deep_copy(h_data, d_data);
+
+  Kokkos::fence();
+  time = timer.seconds();
+  std::cout<<"d_data -> h_data " << time << std::endl;
+  timer.reset();
+
+  to_adios2(h_data, &comm, "data");
+
+  Kokkos::fence();
+  time = timer.seconds();
+  std::cout<<"to_adios2 " << time << std::endl;
+  timer.reset();
   }
   Kokkos::finalize();
   MPI_Finalize();
